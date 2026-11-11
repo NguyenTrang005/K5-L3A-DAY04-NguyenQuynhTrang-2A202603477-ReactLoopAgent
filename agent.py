@@ -23,6 +23,7 @@ def run_agent(question, provider, tools, max_steps=6):
     ]
     trace = []
     usage = []
+    observed_urls = set()
     for step in range(1, max_steps + 1):
         try:
             response = provider.complete(messages, SCHEMAS)
@@ -87,6 +88,15 @@ def run_agent(question, provider, tools, max_steps=6):
                             "message": "Không thực thi được tool.",
                         }
 
+                # Chỉ yêu cầu nguồn từ incident đã đọc thành công.
+                if (
+                    call["name"] == "get_incident_details"
+                    and result.get("ok") is True
+                    and isinstance(result.get("url"), str)
+                    and result["url"]
+                ):
+                    observed_urls.add(result["url"])
+
                 trace.append({
                     "event": "tool",
                     "step": step,
@@ -103,9 +113,31 @@ def run_agent(question, provider, tools, max_steps=6):
 
             continue
         if finish == "stop":
+            answer = message.get("content") or ""
+            has_source = any(url in answer for url in observed_urls)
+
+            if observed_urls and not has_source:
+                trace.append({
+                    "event": "validation_missing_source",
+                    "step": step,
+                    "observed_urls": sorted(observed_urls),
+                })
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Câu trả lời đang thiếu URL nguồn incident. "
+                        "Hãy sửa câu trả lời và dẫn ít nhất một URL phù hợp "
+                        "trong các URL đã quan sát sau:\n"
+                        + "\n".join(sorted(observed_urls))
+                        + "\nChỉ nêu kết luận được dữ liệu tool hỗ trợ."
+                    ),
+                })
+                # Lượt sửa vẫn nằm trong max_steps; hết lượt trả max_steps.
+                continue
+
             return {
                 "status": "completed",
-                "answer": message.get("content") or "",
+                "answer": answer,
                 "trace": trace,
                 "usage": usage,
             }
